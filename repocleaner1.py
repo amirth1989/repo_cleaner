@@ -10,7 +10,7 @@ MASTER_REPO_LIST = "masterRepoList.txt"
 # Initialize GitHub API
 if not GITHUB_TOKEN:
     raise ValueError("GitHub token not found. Set it as an environment variable.")
-g = Github(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)
+g = Github(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git)
 
 
 def get_repo_list():
