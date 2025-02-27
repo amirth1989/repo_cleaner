@@ -109,5 +109,5 @@ def main():
             if len(branches) == total_branches:
                 print("Recommendation: Consider deleting the repository as all branches were stale.")
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     main()
