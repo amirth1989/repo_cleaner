@@ -1,2 +1,1 @@
-https://github.com/amirth1989/temp.git
-https://github.com/amirth1989/testing1.git
+https://github.com/amirth1989/docs.git
