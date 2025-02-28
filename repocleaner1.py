@@ -1,113 +1,127 @@
 from github import Github
 from datetime import datetime, timedelta
 import os
+import subprocess
+from collections import defaultdict
 
-# Constants
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # Set your GitHub token as an environment variable
-TIME_WINDOW_DAYS = 365  # Time window in days (1 year)
-MASTER_REPO_LIST = "masterRepoList.txt"
-
-# Initialize GitHub API
-g = Github(GITHUB_TOKEN)
-
-def get_repo_list():
-    """Read the list of repositories from masterRepoList.txt."""
-    try:
-        with open(MASTER_REPO_LIST, "r") as file:
-            return [line.strip() for line in file.readlines()]
-    except FileNotFoundError:
-        print(f"Error: {MASTER_REPO_LIST} not found.")
-        return []
+def read_repo_list(filename):
+    with open(filename, "r") as file:
+        return [line.strip() for line in file.readlines() if line.strip()]
 
 def get_stale_branches(repo, time_window):
-    """Identify branches older than the specified time window."""
     stale_branches = []
-    cutoff_date = datetime.utcnow() - timedelta(days=time_window)
+    current_time = int(time.time())
     
-    try:
-        for branch in repo.get_branches():
-            last_commit_date = branch.commit.commit.author.date
-            if last_commit_date < cutoff_date:
-                stale_branches.append(branch.name)
-    except Exception as e:
-        print(f"Error retrieving branches for {repo.full_name}: {e}")
+    result = subprocess.run(["git", "ls-remote", "--heads", repo], capture_output=True, text=True)
+    branches = [line.split()[-1].replace("refs/heads/", "") for line in result.stdout.strip().split("\n") if line]
+    total_branches = len(branches)
+    stale_count = 0
     
-    return stale_branches
+    for branch in branches:
+        log_cmd = ["git", "log", "-1", "--format=%ct", f"origin/{branch}"]
+        log_result = subprocess.run(log_cmd, capture_output=True, text=True)
+        
+        if log_result.stdout.strip():
+            last_commit_time = int(log_result.stdout.strip())
+            if (current_time - last_commit_time) > time_window:
+                stale_days = (current_time - last_commit_time) // (24 * 60 * 60)
+                stale_years = round(stale_days / 365, 2)
+                stale_branches.append(f"{branch} ({stale_days} days, {stale_years} years)")
+                stale_count += 1
+    
+    return stale_branches, total_branches, stale_count
 
-def delete_branches(repo, branches_to_delete):
-    """Delete selected branches."""
-    for branch in branches_to_delete:
-        try:
-            ref = repo.get_git_ref(f"heads/{branch}")
-            ref.delete()
-            print(f"Deleted branch: {branch}")
-        except Exception as e:
-            print(f"Error deleting branch {branch} in {repo.full_name}: {e}")
+def delete_branches(repo, branches):
+    for branch in branches:
+        branch_name = branch.split()[0]
+        subprocess.run(["git", "push", repo, "--delete", branch_name])
+
+def process_repositories(repo_list_file):
+    time_window = 365 * 24 * 60 * 60  # 1 year in seconds
+    repo_data = defaultdict(dict)
+    
+    repos = read_repo_list(repo_list_file)
+    
+    for repo in repos:
+        print(f"Processing repository: {repo}")
+        repo_name = os.path.basename(repo).replace(".git", "")
+        
+        if os.path.isdir(repo_name):
+            print("Repository already cloned. Updating...")
+            os.chdir(repo_name)
+            subprocess.run(["git", "fetch", "--all"])
+        else:
+            subprocess.run(["git", "clone", repo])
+            os.chdir(repo_name)
+        
+        stale_branches, total_branches, stale_count = get_stale_branches(repo, time_window)
+        repo_data[repo]["total_branches"] = total_branches
+        repo_data[repo]["stale_branches"] = stale_branches
+        repo_data[repo]["stale_count"] = stale_count
+        
+        os.chdir("..")
+    
+    return repo_data
+
+def display_summary(repo_data):
+    print("Summary of repositories:")
+    for repo, data in repo_data.items():
+        print(f"Repository: {repo}")
+        print(f"Total branches: {data['total_branches']}")
+        print(f"Total stale branches: {data['stale_count']}")
+        if data["stale_branches"]:
+            print("Stale branches:")
+            for branch in data["stale_branches"]:
+                print(f"  - {branch}")
+        else:
+            print("No stale branches found.")
+        print()
+
+def prompt_for_deletion(repo_data):
+    deleted_branches = defaultdict(list)
+    
+    for repo, data in repo_data.items():
+        if not data["stale_branches"]:
+            continue
+        
+        print(f"Stale branches found in repository: {repo}")
+        for branch in data["stale_branches"]:
+            print(f"  - {branch}")
+        
+        consent = input("Do you want to delete all, some, or none of the stale branches from this repo? (all/some/none): ").strip().lower()
+        
+        if consent == "all":
+            delete_branches(repo, data["stale_branches"])
+            deleted_branches[repo] = data["stale_branches"]
+            print(f"Deleted all stale branches from {repo}.")
+        elif consent == "some":
+            selected_branches = input("Enter the branches you want to delete, separated by spaces: ").split()
+            valid_branches = [b for b in data["stale_branches"] if b.split()[0] in selected_branches]
+            if valid_branches:
+                delete_branches(repo, valid_branches)
+                deleted_branches[repo] = valid_branches
+                print(f"Deleted selected stale branches from {repo}.")
+            else:
+                print("No valid stale branches selected for deletion.")
+    
+    return deleted_branches
+
+def display_executive_summary(repo_data, deleted_branches):
+    print("Executive Summary:")
+    for repo, branches in deleted_branches.items():
+        print(f"Repository: {repo}")
+        print(f"Deleted branches: {', '.join(branches)}")
+        if repo_data[repo]["total_branches"] == repo_data[repo]["stale_count"]:
+            print("Recommendation: All branches in this repository are stale. Consider deleting the repository.")
+        print()
 
 def main():
-    # Read repository list
-    repo_urls = get_repo_list()
-    deleted_branches_summary = {}
-
-    if not repo_urls:
-        print("No repositories found. Exiting.")
-        return
-
-    for repo_url in repo_urls:
-        repo_name = "/".join(repo_url.split("/")[-2:])  # Extract owner/repo format
-        
-        try:
-            repo = g.get_repo(repo_name)
-        except Exception as e:
-            print(f"Error accessing repository {repo_name}: {e}")
-            continue
-
-        # Get stale branches
-        stale_branches = get_stale_branches(repo, TIME_WINDOW_DAYS)
-        total_branches = sum(1 for _ in repo.get_branches())
-
-        print(f"\nRepository: {repo_name}")
-        print(f"Total branches: {total_branches}")
-        print(f"Stale branches: {len(stale_branches)}")
-
-        if stale_branches:
-            print("Stale branches:")
-            for i, branch in enumerate(stale_branches, 1):
-                print(f"{i}. {branch}")
-
-            # Get user input for deletion
-            while True:
-                user_input = input("Enter branch numbers to delete (comma-separated, 'all' to delete all, 'none' to skip): ").strip().lower()
-                if user_input == "all":
-                    branches_to_delete = stale_branches
-                    break
-                elif user_input == "none":
-                    branches_to_delete = []
-                    break
-                else:
-                    try:
-                        selected_indices = [int(i) - 1 for i in user_input.split(",")]
-                        if all(0 <= i < len(stale_branches) for i in selected_indices):
-                            branches_to_delete = [stale_branches[i] for i in selected_indices]
-                            break
-                        else:
-                            print("Invalid selection. Please enter valid branch numbers.")
-                    except ValueError:
-                        print("Invalid input. Please enter numbers separated by commas.")
-
-            # Delete branches
-            if branches_to_delete:
-                delete_branches(repo, branches_to_delete)
-                deleted_branches_summary[repo_name] = branches_to_delete
-
-    # Generate executive summary
-    if deleted_branches_summary:
-        print("\nExecutive Summary:")
-        for repo, branches in deleted_branches_summary.items():
-            print(f"Repository: {repo}")
-            print(f"Deleted branches: {', '.join(branches)}")
-            if len(branches) == total_branches:
-                print("Recommendation: Consider deleting the repository as all branches were stale.")
+    repo_list_file = "masterrepolist.txt"
+    repo_data = process_repositories(repo_list_file)
+    display_summary(repo_data)
+    deleted_branches = prompt_for_deletion(repo_data)
+    display_executive_summary(repo_data, deleted_branches)
+    print("RepoCleaner run completed.")
 
 if __name__ == "__main__":
     main()
