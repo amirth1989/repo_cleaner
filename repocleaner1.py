@@ -11,7 +11,6 @@ def read_repo_list(filename):
 def get_stale_branches(repo, time_window):
     stale_branches = []
     current_time = int(time.time())
-    
     result = subprocess.run(["git", "ls-remote", "--heads", repo], capture_output=True, text=True)
     branches = [line.split()[-1].replace("refs/heads/", "") for line in result.stdout.strip().split("\n") if line]
     total_branches = len(branches)
