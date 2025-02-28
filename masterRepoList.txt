@@ -1,1 +1,4 @@
 https://github.com/amirth1989/docs.git
+https://github.com/amirth1989/gh-ost
+https://github.com/amirth1989/dmca
+https://github.com/amirth1989/DPG-guidance
